@@ -6,6 +6,13 @@ The system enforces **single-task focus**: it is only possible to run one task a
 
 ---
 
+# Motivation
+
+A Pomodoro Chrome extension I relied on heavily suddenly paywalled its recurring tasks feature, rendering it useless for my workflow. Frustrated, I quickly vibe-coded a working prototype, refined the terminal interface for better legibility, and added the custom scheduling features I needed—like repeating blueprints and scheduled auto-starts.
+
+​
+I designed it to be as non-distracting as possible, hence the background daemon that runs silently and only notifies you at phase transitions (task end, break end). It's lightweight (minimal RAM usage), reliable (won't fail mid-session), and integrates with desktop status bars like GNOME's top bar (or equivalents on other OSes). TUIs and CLIs are perfect—they're far less resource-intensive and distracting than GUIs.
+
 # Architecture
 
 The application is split into two primary components:
