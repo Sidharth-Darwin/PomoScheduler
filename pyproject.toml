@@ -1,5 +1,5 @@
 [project]
-name = "pomo-planner"
+name = "pomo-scheduler"
 version = "0.1.0"
 description = "A headless Pomodoro planner with CLI, TUI, and AI support"
 readme = "README.md"
