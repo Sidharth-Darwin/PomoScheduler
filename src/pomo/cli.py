@@ -9,7 +9,6 @@ from pomo.storage import (
     get_pending_tasks,
     get_completed_tasks,
     delete_task,
-    get_stats,
 )
 from rich import print
 
@@ -114,21 +113,22 @@ def stats(
     name: Optional[str] = typer.Option(
         None, "-n", "--name", help="Filter by a specific task name"
     ),
-    all_time: bool = typer.Option(
-        False, "--all", help="Show all-time statistics instead of just today"
+    days: int = typer.Option(
+        7, "-d", "--days", help="Number of days to analyze (use 0 for all-time)"
     ),
     as_json: bool = typer.Option(False, "--json"),
 ):
-    """View advanced focus statistics, streaks, and a 7-day heatmap."""
+    """View advanced focus statistics, streaks, and a dynamic heatmap."""
+    from pomo.storage import get_stats
 
     init_db()
-    data = get_stats(name, all_time)
+    data = get_stats(name, days)
 
     if as_json:
         typer.echo(json.dumps(data, indent=2))
         return
 
-    time_scope = "ALL TIME" if all_time else "TODAY"
+    time_scope = "ALL TIME" if days <= 0 else f"LAST {days} DAYS"
     task_scope = f"Task: {name}" if name else "All Tasks"
 
     typer.secho(
@@ -146,8 +146,15 @@ def stats(
     if data["best_hour"]:
         typer.echo(f"Most Productive:     {data['best_hour']}")
 
+    if data["task_breakdown"]:
+        typer.secho("\nTask Breakdown:", fg=typer.colors.CYAN, bold=True)
+        for task in data["task_breakdown"]:
+            th, tm = divmod(task["mins"], 60)
+            t_name = task["name"] or "Unknown Task"
+            typer.echo(f"  {t_name:<20} {th}h {tm}m ({task['sessions']} sessions)")
+
     if data["heatmap"]:
-        typer.secho("\nLast 7 Days Heatmap:", fg=typer.colors.CYAN, bold=True)
+        typer.secho(f"\nHeatmap ({time_scope}):", fg=typer.colors.CYAN, bold=True)
         max_mins = max([day["daily_mins"] for day in data["heatmap"]])
 
         for day in data["heatmap"]:
@@ -158,10 +165,41 @@ def stats(
             typer.echo(f"  {day['focus_date']} │ {bar:<20} {dh}h {dm}m")
     else:
         typer.secho(
-            "\nNo session data in the last 7 days to build a heatmap.",
+            "\nNo session data found to build a heatmap for this timeframe.",
             fg=typer.colors.BRIGHT_BLACK,
         )
     print("\n")
+
+
+@app.command()
+def clear():
+    """Wipe ALL tasks, blueprints, and focus history permanently."""
+    typer.secho(
+        "WARNING: You are about to delete ALL your Pomodoro data.",
+        fg=typer.colors.RED,
+        bold=True,
+    )
+
+    confirm1 = typer.confirm("Are you absolutely sure you want to do this?")
+    if not confirm1:
+        raise typer.Exit()
+
+    typer.secho(
+        "This will wipe all your stats, streaks, tasks, and history.",
+        fg=typer.colors.YELLOW,
+    )
+    confirm2 = typer.confirm(
+        "This action CANNOT be undone. Final confirmation to proceed?"
+    )
+
+    if not confirm2:
+        raise typer.Exit()
+
+    init_db()
+    from pomo.storage import clear_all_data
+
+    clear_all_data()
+    typer.secho("All data has been wiped clean.", fg=typer.colors.GREEN)
 
 
 @app.command()

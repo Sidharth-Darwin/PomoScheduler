@@ -75,30 +75,32 @@ def log_session(
         conn.commit()
 
 
-def get_stats(task_name: Optional[str] = None, all_time: bool = False) -> dict:
-    """Fetch advanced focus metrics, streaks, and heatmaps, filtering by task name."""
+def get_stats(task_name: Optional[str] = None, days: int = 7) -> dict:
+    """Fetch advanced focus metrics, streaks, and heatmaps, filtering by task name and interval."""
     with get_connection() as conn:
         cursor = conn.cursor()
 
-        date_filter = (
-            "1=1" if all_time else "DATE(ps.start_time) = DATE('now', 'localtime')"
-        )
+        params = []
+        filters = []
 
-        # Filter by name string instead of task_id
         if task_name:
-            task_filter = "dt.name = ?"
-            params = (task_name,)
-        else:
-            task_filter = "1=1"
-            params = ()
+            filters.append("dt.name = ?")
+            params.append(task_name)
 
-        where_clause = f"WHERE {date_filter} AND {task_filter}"
-        where_clause_heatmap = f"WHERE {task_filter} AND DATE(ps.start_time) >= DATE('now', 'localtime', '-6 days')"
+        # If days is greater than 0, restrict the time window.
+        # (days - 1) because "today" counts as 1 day.
+        if days > 0:
+            filters.append(
+                f"DATE(ps.start_time) >= DATE('now', 'localtime', '-{days - 1} days')"
+            )
+
+        where_clause = "WHERE " + " AND ".join(filters) if filters else ""
 
         stats = {
             "total_sessions": 0,
             "total_focus_minutes": 0,
             "best_hour": None,
+            "task_breakdown": [],
             "heatmap": [],
             "streak": 0,
         }
@@ -135,13 +137,27 @@ def get_stats(task_name: Optional[str] = None, all_time: bool = False) -> dict:
         if row:
             stats["best_hour"] = f"{row['hour']}:00"
 
-        # 3. Last 7 Days Heatmap
+        # 3. Task Breakdown (NEW)
+        cursor.execute(
+            f"""
+            SELECT dt.name, COUNT(ps.id) as sessions, SUM(ps.work_mins) as mins
+            FROM pomodoro_sessions ps
+            LEFT JOIN daily_tasks dt ON ps.daily_task_id = dt.id
+            {where_clause}
+            GROUP BY dt.name
+            ORDER BY mins DESC
+        """,
+            params,
+        )
+        stats["task_breakdown"] = [dict(r) for r in cursor.fetchall()]
+
+        # 4. Heatmap
         cursor.execute(
             f"""
             SELECT DATE(ps.start_time) as focus_date, SUM(ps.work_mins) as daily_mins
             FROM pomodoro_sessions ps
             LEFT JOIN daily_tasks dt ON ps.daily_task_id = dt.id
-            {where_clause_heatmap}
+            {where_clause}
             GROUP BY DATE(ps.start_time)
             ORDER BY focus_date ASC
         """,
@@ -149,16 +165,18 @@ def get_stats(task_name: Optional[str] = None, all_time: bool = False) -> dict:
         )
         stats["heatmap"] = [dict(r) for r in cursor.fetchall()]
 
-        # 4. Calculate Current Streak
+        # 5. Calculate Current Streak (Always calculates all-time streak to be accurate)
+        streak_params = (task_name,) if task_name else ()
+        streak_where = "WHERE dt.name = ?" if task_name else ""
         cursor.execute(
             f"""
             SELECT DISTINCT DATE(ps.start_time) as focus_date
             FROM pomodoro_sessions ps
             LEFT JOIN daily_tasks dt ON ps.daily_task_id = dt.id
-            WHERE {task_filter}
+            {streak_where}
             ORDER BY focus_date DESC
         """,
-            params,
+            streak_params,
         )
         dates = [r["focus_date"] for r in cursor.fetchall()]
 
@@ -179,6 +197,19 @@ def get_stats(task_name: Optional[str] = None, all_time: bool = False) -> dict:
         stats["streak"] = streak
 
         return stats
+
+
+def clear_all_data():
+    """Wipe everything for the 'clear' command."""
+    with get_connection() as conn:
+        conn.execute("DELETE FROM pomodoro_sessions")
+        conn.execute("DELETE FROM daily_tasks")
+        conn.execute("DELETE FROM task_blueprints")
+        # Reset the auto-increment IDs so fresh tasks start at 1 again
+        conn.execute(
+            "DELETE FROM sqlite_sequence WHERE name IN ('pomodoro_sessions', 'daily_tasks', 'task_blueprints')"
+        )
+        conn.commit()
 
 
 def spawn_daily_tasks():
