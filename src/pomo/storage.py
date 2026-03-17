@@ -1,7 +1,7 @@
 import sqlite3
+import datetime
 from typing import List, Dict, Any, Optional, cast
 from pomo.utils import get_db_path, ensure_dirs
-import datetime
 
 
 def get_connection() -> sqlite3.Connection:
@@ -50,9 +50,18 @@ def init_db():
                 start_time DATETIME,
                 end_time DATETIME,
                 work_mins INTEGER,
+                session_type TEXT DEFAULT 'work',
                 FOREIGN KEY(daily_task_id) REFERENCES daily_tasks(id)
             )
         """)
+
+        try:
+            cursor.execute(
+                "ALTER TABLE pomodoro_sessions ADD COLUMN session_type TEXT DEFAULT 'work'"
+            )
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
         conn.commit()
 
 
@@ -61,22 +70,28 @@ def log_session(
     blueprint_id: Optional[int],
     start_time: str,
     end_time: str,
-    work_mins: int,
+    duration_mins: int,
+    session_type: str = "work",
 ):
-    """Ensure this function exists in your storage.py so the engine can call it!"""
     with get_connection() as conn:
         conn.execute(
             """
-            INSERT INTO pomodoro_sessions (daily_task_id, blueprint_id, start_time, end_time, work_mins)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO pomodoro_sessions (daily_task_id, blueprint_id, start_time, end_time, work_mins, session_type)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (daily_task_id, blueprint_id, start_time, end_time, work_mins),
+            (
+                daily_task_id,
+                blueprint_id,
+                start_time,
+                end_time,
+                duration_mins,
+                session_type,
+            ),
         )
         conn.commit()
 
 
 def get_stats(task_name: Optional[str] = None, days: int = 7) -> dict:
-    """Fetch advanced focus metrics, streaks, and heatmaps, filtering by task name and interval."""
     with get_connection() as conn:
         cursor = conn.cursor()
 
@@ -87,8 +102,6 @@ def get_stats(task_name: Optional[str] = None, days: int = 7) -> dict:
             filters.append("dt.name = ?")
             params.append(task_name)
 
-        # If days is greater than 0, restrict the time window.
-        # (days - 1) because "today" counts as 1 day.
         if days > 0:
             filters.append(
                 f"DATE(ps.start_time) >= DATE('now', 'localtime', '-{days - 1} days')"
@@ -99,19 +112,20 @@ def get_stats(task_name: Optional[str] = None, days: int = 7) -> dict:
         stats = {
             "total_sessions": 0,
             "total_focus_minutes": 0,
+            "total_break_minutes": 0,
             "best_hour": None,
             "task_breakdown": [],
             "heatmap": [],
             "streak": 0,
         }
 
-        # 1. Total sessions and minutes
+        # 1. Total Focus Sessions and Minutes
         cursor.execute(
             f"""
             SELECT COUNT(ps.id), SUM(ps.work_mins) 
             FROM pomodoro_sessions ps
             LEFT JOIN daily_tasks dt ON ps.daily_task_id = dt.id
-            {where_clause}
+            {where_clause + (" AND " if where_clause else "WHERE ")} ps.session_type = 'work'
         """,
             params,
         )
@@ -120,13 +134,27 @@ def get_stats(task_name: Optional[str] = None, days: int = 7) -> dict:
             stats["total_sessions"] = row[0]
             stats["total_focus_minutes"] = row[1] or 0
 
-        # 2. Most Productive Hour
+        # 2. Total Break Minutes
+        cursor.execute(
+            f"""
+            SELECT SUM(ps.work_mins) 
+            FROM pomodoro_sessions ps
+            LEFT JOIN daily_tasks dt ON ps.daily_task_id = dt.id
+            {where_clause + (" AND " if where_clause else "WHERE ")} ps.session_type = 'break'
+        """,
+            params,
+        )
+        row_break = cursor.fetchone()
+        if row_break and row_break[0]:
+            stats["total_break_minutes"] = row_break[0] or 0
+
+        # 3. Most Productive Hour (Focus only)
         cursor.execute(
             f"""
             SELECT strftime('%H', ps.start_time) as hour, SUM(ps.work_mins) as mins
             FROM pomodoro_sessions ps
             LEFT JOIN daily_tasks dt ON ps.daily_task_id = dt.id
-            {where_clause}
+            {where_clause + (" AND " if where_clause else "WHERE ")} ps.session_type = 'work'
             GROUP BY hour
             ORDER BY mins DESC
             LIMIT 1
@@ -137,13 +165,13 @@ def get_stats(task_name: Optional[str] = None, days: int = 7) -> dict:
         if row:
             stats["best_hour"] = f"{row['hour']}:00"
 
-        # 3. Task Breakdown (NEW)
+        # 4. Task Breakdown (Focus only)
         cursor.execute(
             f"""
             SELECT dt.name, COUNT(ps.id) as sessions, SUM(ps.work_mins) as mins
             FROM pomodoro_sessions ps
             LEFT JOIN daily_tasks dt ON ps.daily_task_id = dt.id
-            {where_clause}
+            {where_clause + (" AND " if where_clause else "WHERE ")} ps.session_type = 'work'
             GROUP BY dt.name
             ORDER BY mins DESC
         """,
@@ -151,13 +179,13 @@ def get_stats(task_name: Optional[str] = None, days: int = 7) -> dict:
         )
         stats["task_breakdown"] = [dict(r) for r in cursor.fetchall()]
 
-        # 4. Heatmap
+        # 5. Heatmap (Focus only)
         cursor.execute(
             f"""
             SELECT DATE(ps.start_time) as focus_date, SUM(ps.work_mins) as daily_mins
             FROM pomodoro_sessions ps
             LEFT JOIN daily_tasks dt ON ps.daily_task_id = dt.id
-            {where_clause}
+            {where_clause + (" AND " if where_clause else "WHERE ")} ps.session_type = 'work'
             GROUP BY DATE(ps.start_time)
             ORDER BY focus_date ASC
         """,
@@ -165,9 +193,13 @@ def get_stats(task_name: Optional[str] = None, days: int = 7) -> dict:
         )
         stats["heatmap"] = [dict(r) for r in cursor.fetchall()]
 
-        # 5. Calculate Current Streak (Always calculates all-time streak to be accurate)
+        # 6. Calculate Streak (Focus only)
         streak_params = (task_name,) if task_name else ()
-        streak_where = "WHERE dt.name = ?" if task_name else ""
+        streak_where = (
+            "WHERE dt.name = ? AND ps.session_type = 'work'"
+            if task_name
+            else "WHERE ps.session_type = 'work'"
+        )
         cursor.execute(
             f"""
             SELECT DISTINCT DATE(ps.start_time) as focus_date
@@ -200,18 +232,17 @@ def get_stats(task_name: Optional[str] = None, days: int = 7) -> dict:
 
 
 def clear_all_data():
-    """Wipe everything for the 'clear' command."""
     with get_connection() as conn:
         conn.execute("DELETE FROM pomodoro_sessions")
         conn.execute("DELETE FROM daily_tasks")
         conn.execute("DELETE FROM task_blueprints")
-        # Reset the auto-increment IDs so fresh tasks start at 1 again
         conn.execute(
             "DELETE FROM sqlite_sequence WHERE name IN ('pomodoro_sessions', 'daily_tasks', 'task_blueprints')"
         )
         conn.commit()
 
 
+# --- Maintain your other existing storage.py functions below here ---
 def spawn_daily_tasks():
     today_str = str(datetime.datetime.today().weekday())
     with get_connection() as conn:
@@ -227,10 +258,7 @@ def spawn_daily_tasks():
                 )
                 if not cursor.fetchone():
                     cursor.execute(
-                        """
-                        INSERT INTO daily_tasks (blueprint_id, name, max_pomodoros, work_mins, break_mins, scheduled_time, auto_start)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
+                        "INSERT INTO daily_tasks (blueprint_id, name, max_pomodoros, work_mins, break_mins, scheduled_time, auto_start) VALUES (?, ?, ?, ?, ?, ?, ?)",
                         (
                             bp["id"],
                             bp["name"],
@@ -255,10 +283,7 @@ def create_daily_task(
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            """
-            INSERT INTO daily_tasks (name, max_pomodoros, work_mins, break_mins, scheduled_time, auto_start)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
+            "INSERT INTO daily_tasks (name, max_pomodoros, work_mins, break_mins, scheduled_time, auto_start) VALUES (?, ?, ?, ?, ?, ?)",
             (name, pomos, work, break_m, scheduled_time, auto_start),
         )
         conn.commit()
@@ -279,19 +304,12 @@ def create_repeating_task(
         blueprint_id = None
         if repeat_days:
             cursor.execute(
-                """
-                INSERT INTO task_blueprints (name, max_pomodoros, work_mins, break_mins, repeat_days, scheduled_time, auto_start)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
+                "INSERT INTO task_blueprints (name, max_pomodoros, work_mins, break_mins, repeat_days, scheduled_time, auto_start) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (name, pomos, work, break_m, repeat_days, scheduled_time, auto_start),
             )
             blueprint_id = cursor.lastrowid
-
         cursor.execute(
-            """
-            INSERT INTO daily_tasks (blueprint_id, name, max_pomodoros, work_mins, break_mins, scheduled_time, auto_start)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
+            "INSERT INTO daily_tasks (blueprint_id, name, max_pomodoros, work_mins, break_mins, scheduled_time, auto_start) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (blueprint_id, name, pomos, work, break_m, scheduled_time, auto_start),
         )
         conn.commit()
@@ -356,11 +374,7 @@ def update_daily_task(
 ):
     with get_connection() as conn:
         conn.execute(
-            """
-            UPDATE daily_tasks
-            SET name=?, max_pomodoros=?, work_mins=?, break_mins=?, scheduled_time=?, auto_start=?
-            WHERE id=?
-            """,
+            "UPDATE daily_tasks SET name=?, max_pomodoros=?, work_mins=?, break_mins=?, scheduled_time=?, auto_start=? WHERE id=?",
             (name, pomos, work, break_m, scheduled_time, auto_start, task_id),
         )
         conn.commit()
@@ -378,11 +392,7 @@ def update_blueprint(
 ):
     with get_connection() as conn:
         conn.execute(
-            """
-            UPDATE task_blueprints
-            SET name=?, max_pomodoros=?, work_mins=?, break_mins=?, repeat_days=?, scheduled_time=?, auto_start=?
-            WHERE id=?
-            """,
+            "UPDATE task_blueprints SET name=?, max_pomodoros=?, work_mins=?, break_mins=?, repeat_days=?, scheduled_time=?, auto_start=? WHERE id=?",
             (
                 name,
                 pomos,

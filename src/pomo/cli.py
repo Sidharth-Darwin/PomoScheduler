@@ -138,28 +138,38 @@ def stats(
     )
 
     total_h, total_m = divmod(data["total_focus_minutes"], 60)
+    break_h, break_m = divmod(data["total_break_minutes"], 60)
 
     typer.echo(f"Current Streak:      {data['streak']} days")
     typer.echo(f"Total Focus Time:    {total_h}h {total_m}m")
+    typer.echo(f"Total Break Time:    {break_h}h {break_m}m")
     typer.echo(f"Total Sessions:      {data['total_sessions']}")
 
     if data["best_hour"]:
         typer.echo(f"Most Productive:     {data['best_hour']}")
 
     if data["task_breakdown"]:
-        typer.secho("\nTask Breakdown:", fg=typer.colors.CYAN, bold=True)
+        typer.secho("\nTask Breakdown (Focus):", fg=typer.colors.CYAN, bold=True)
         for task in data["task_breakdown"]:
             th, tm = divmod(task["mins"], 60)
             t_name = task["name"] or "Unknown Task"
             typer.echo(f"  {t_name:<20} {th}h {tm}m ({task['sessions']} sessions)")
 
     if data["heatmap"]:
-        typer.secho(f"\nHeatmap ({time_scope}):", fg=typer.colors.CYAN, bold=True)
         max_mins = max([day["daily_mins"] for day in data["heatmap"]])
+        scale_max = max(60, max_mins)
+        block_value = scale_max / 20.0
+
+        typer.secho(
+            f"\nHeatmap ({time_scope}) | Scale: █ = ~{block_value:.1f} mins:",
+            fg=typer.colors.CYAN,
+            bold=True,
+        )
 
         for day in data["heatmap"]:
             dh, dm = divmod(day["daily_mins"], 60)
-            blocks = int((day["daily_mins"] / max_mins) * 20) if max_mins > 0 else 0
+            # Ensure at least 1 block if they did anything, capped at 20 blocks
+            blocks = min(20, max(1, int((day["daily_mins"] / scale_max) * 20)))
             bar = "█" * blocks
 
             typer.echo(f"  {day['focus_date']} │ {bar:<20} {dh}h {dm}m")
@@ -169,6 +179,67 @@ def stats(
             fg=typer.colors.BRIGHT_BLACK,
         )
     print("\n")
+
+
+@app.command()
+def create(
+    name: Optional[str] = typer.Option(None, "-n", "--name", help="Name of the task"),
+    pomos: int = typer.Option(5, "-p", "--pomos", help="Max pomodoros"),
+    work: int = typer.Option(25, "-w", "--work", help="Work minutes"),
+    break_m: int = typer.Option(5, "-b", "--break", help="Break minutes"),
+    time_val: Optional[str] = typer.Option(
+        None, "-t", "--time", help="Scheduled time (HH:MM)"
+    ),
+    auto: bool = typer.Option(False, "--auto", help="Auto start at scheduled time"),
+    repeat: Optional[str] = typer.Option(
+        None, "-r", "--repeat", help="Repeat days (0=Mon, 6=Sun) e.g., '0,1,2'"
+    ),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """Create a new daily task. Leave arguments empty for an interactive prompt."""
+    from pomo.storage import create_repeating_task
+
+    init_db()
+
+    if name is None:
+        typer.secho("Create a New Task", fg=typer.colors.CYAN, bold=True)
+        name = typer.prompt("Task name", type=str)
+        pomos = int(typer.prompt("Number of pomodoros", default=5))
+        work = int(typer.prompt("Work duration (mins)", default=25))
+        break_m = int(typer.prompt("Break duration (mins)", default=5))
+
+        time_prompt = typer.prompt(
+            "Scheduled Time (HH:MM) [Leave empty to skip]", default=""
+        )
+        time_val = time_prompt.strip() or None
+
+        if time_val:
+            auto = typer.confirm("Auto-start task at this time?")
+
+        is_repeat = typer.confirm("Does this task repeat on specific days?")
+        if is_repeat:
+            typer.echo("0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun")
+            repeat = typer.prompt(
+                "Enter days separated by comma (e.g. 0,1,2,3,4)", default="0,1,2,3,4"
+            )
+
+    assert name is not None
+
+    pomos = max(1, min(pomos, 20))
+    work = max(1, min(work, 1000))
+    break_m = max(1, min(break_m, 1000))
+
+    if repeat:
+        task_id = create_repeating_task(
+            name, pomos, work, break_m, repeat, time_val, auto
+        )
+    else:
+        task_id = create_daily_task(name, pomos, work, break_m, time_val, auto)
+
+    if as_json:
+        typer.echo(json.dumps({"status": "success", "task_id": task_id}))
+    else:
+        typer.secho(f"Created task '{name}' (ID: {task_id})", fg=typer.colors.GREEN)
 
 
 @app.command()
@@ -200,40 +271,6 @@ def clear():
 
     clear_all_data()
     typer.secho("All data has been wiped clean.", fg=typer.colors.GREEN)
-
-
-@app.command()
-def create(
-    name: Optional[str] = typer.Option(None, "-n", "--name", help="Name of the task"),
-    pomos: int = typer.Option(5, "-p", "--pomos", help="Max pomodoros"),
-    work: int = typer.Option(25, "-w", "--work", help="Work minutes"),
-    break_m: int = typer.Option(5, "-b", "--break", help="Break minutes"),
-    as_json: bool = typer.Option(False, "--json"),
-):
-    """Create a new daily task. Leave arguments empty for an interactive prompt."""
-    init_db()
-
-    # Interactive mode if name is omitted
-    if name is None:
-        typer.secho("Create a New Task", fg=typer.colors.CYAN, bold=True)
-        name = typer.prompt("Task name", type=str)
-        pomos = int(typer.prompt("Number of pomodoros", default=5))
-        work = int(typer.prompt("Work duration (mins)", default=25))
-        break_m = int(typer.prompt("Break duration (mins)", default=5))
-
-    # Type assertion to satisfy the linter
-    assert name is not None
-
-    pomos = max(1, min(pomos, 20))
-    work = max(1, min(work, 1000))
-    break_m = max(1, min(break_m, 1000))
-
-    task_id = create_daily_task(name, pomos, work, break_m)
-
-    if as_json:
-        typer.echo(json.dumps({"status": "success", "task_id": task_id}))
-    else:
-        typer.secho(f"Created task '{name}' (ID: {task_id})", fg=typer.colors.GREEN)
 
 
 @app.command()
