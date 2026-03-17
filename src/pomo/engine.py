@@ -10,8 +10,10 @@ class PomoEngine:
         self.current_phase: Phase = Phase.IDLE
         self.active_task: Optional[Dict[str, Any]] = None
         self.ends_at: float = 0.0
+
         self.paused_remaining: float = 0.0
         self.pre_pause_phase: Phase = Phase.IDLE
+
         self.last_checked_minute = ""
         self.triggered_schedules = set()
 
@@ -67,6 +69,7 @@ class PomoEngine:
     def start_task(self, task_id: Optional[int]) -> dict:
         if not task_id:
             return {"status": "error", "message": "Task ID required."}
+
         if self.active_task and self.active_task["id"] != task_id:
             self.stop()
 
@@ -76,7 +79,9 @@ class PomoEngine:
             row = cursor.fetchone()
             if not row:
                 return {"status": "error", "message": f"Task {task_id} not found."}
+
             self.active_task = dict(row)
+
             if self.active_task.get("status") == "completed":
                 self.active_task["pomodoros_completed"] = 0
 
@@ -89,6 +94,7 @@ class PomoEngine:
         self.current_phase = Phase.WORK
         self.is_running = True
         self.ends_at = time.time() + (self.active_task["work_mins"] * 60)
+
         return {
             "status": "success",
             "message": f"Started task '{self.active_task['name']}'",
@@ -97,6 +103,7 @@ class PomoEngine:
     def pause(self) -> dict:
         if not self.is_running:
             return {"status": "error", "message": "Timer is not currently running."}
+
         self.is_running = False
         self.paused_remaining = self.ends_at - time.time()
         self.pre_pause_phase = self.current_phase
@@ -106,6 +113,7 @@ class PomoEngine:
     def resume(self) -> dict:
         if self.current_phase != Phase.PAUSED:
             return {"status": "error", "message": "Timer is not paused."}
+
         self.is_running = True
         self.current_phase = self.pre_pause_phase
         self.ends_at = time.time() + self.paused_remaining
@@ -115,6 +123,7 @@ class PomoEngine:
     def skip(self) -> dict:
         if not self.active_task:
             return {"status": "error", "message": "No active task to skip."}
+
         self.handle_transition()
         return {
             "status": "success",
@@ -124,12 +133,14 @@ class PomoEngine:
     def stop(self) -> dict:
         if not self.active_task:
             return {"status": "error", "message": "No active task to stop."}
+
         with get_connection() as conn:
             conn.execute(
                 "UPDATE daily_tasks SET status = 'pending' WHERE id = ?",
                 (self.active_task["id"],),
             )
             conn.commit()
+
         self.is_running = False
         self.current_phase = Phase.IDLE
         self.active_task = None
@@ -143,6 +154,7 @@ class PomoEngine:
 
         if not self.is_running:
             return
+
         if time.time() >= self.ends_at:
             self.handle_transition()
 
@@ -151,6 +163,7 @@ class PomoEngine:
         from pomo.notify import notify
 
         tasks = get_pending_tasks()
+
         try:
             now_h, now_m = map(int, current_minute.split(":"))
             now_total = now_h * 60 + now_m
@@ -161,6 +174,7 @@ class PomoEngine:
             sched = t.get("scheduled_time")
             if not sched:
                 continue
+
             try:
                 sched_h, sched_m = map(int, sched.split(":"))
                 sched_total = sched_h * 60 + sched_m
@@ -168,12 +182,15 @@ class PomoEngine:
                 continue
 
             diff = now_total - sched_total
+
             if 0 <= diff <= 10 and t["id"] not in self.triggered_schedules:
                 self.triggered_schedules.add(t["id"])
+
                 if t.get("auto_start"):
                     self.start_task(t["id"])
                     notify(
-                        "Task Auto-Started!", f"Scheduled task has begun: {t['name']}"
+                        "Task Auto-Started!",
+                        f"Scheduled task has begun: {t['name']}",
                     )
                 else:
                     notify("Scheduled Reminder", f"It's time to start: {t['name']}")
@@ -191,13 +208,6 @@ class PomoEngine:
             str_start = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time))
             str_end = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(end_time))
 
-            with get_connection() as conn:
-                conn.execute(
-                    "UPDATE daily_tasks SET pomodoros_completed = ? WHERE id = ?",
-                    (current_completed, self.active_task["id"]),
-                )
-                conn.commit()
-
             log_session(
                 self.active_task["id"],
                 self.active_task.get("blueprint_id"),
@@ -205,6 +215,13 @@ class PomoEngine:
                 str_end,
                 self.active_task["work_mins"],
             )
+
+            with get_connection() as conn:
+                conn.execute(
+                    "UPDATE daily_tasks SET pomodoros_completed = ? WHERE id = ?",
+                    (current_completed, self.active_task["id"]),
+                )
+                conn.commit()
 
             if current_completed >= self.active_task["max_pomodoros"]:
                 with get_connection() as conn:
@@ -220,7 +237,7 @@ class PomoEngine:
                 from pomo.notify import notify
 
                 notify(
-                    "Task Completed! 🎉",
+                    "Task Completed!",
                     f"You finished: {self.active_task['name']}",
                     fallback_sound="achievement.wav",
                 )

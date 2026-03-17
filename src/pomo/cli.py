@@ -111,8 +111,8 @@ def list(as_json: bool = typer.Option(False, "--json")):
 
 @app.command()
 def stats(
-    task_id: Optional[int] = typer.Option(
-        None, "-n", "--task-id", help="Filter by a specific task ID"
+    name: Optional[str] = typer.Option(
+        None, "-n", "--name", help="Filter by a specific task name"
     ),
     all_time: bool = typer.Option(
         False, "--all", help="Show all-time statistics instead of just today"
@@ -120,15 +120,16 @@ def stats(
     as_json: bool = typer.Option(False, "--json"),
 ):
     """View advanced focus statistics, streaks, and a 7-day heatmap."""
+
     init_db()
-    data = get_stats(task_id, all_time)
+    data = get_stats(name, all_time)
 
     if as_json:
         typer.echo(json.dumps(data, indent=2))
         return
 
     time_scope = "ALL TIME" if all_time else "TODAY"
-    task_scope = f"Task #{task_id}" if task_id else "All Tasks"
+    task_scope = f"Task: {name}" if name else "All Tasks"
 
     typer.secho(
         f"\nPomo Planner Stats [{time_scope} | {task_scope}]",
@@ -136,7 +137,6 @@ def stats(
         bold=True,
     )
 
-    # Format hours and minutes
     total_h, total_m = divmod(data["total_focus_minutes"], 60)
 
     typer.echo(f"Current Streak:      {data['streak']} days")
@@ -146,14 +146,12 @@ def stats(
     if data["best_hour"]:
         typer.echo(f"Most Productive:     {data['best_hour']}")
 
-    # Render ASCII Heatmap
     if data["heatmap"]:
         typer.secho("\nLast 7 Days Heatmap:", fg=typer.colors.CYAN, bold=True)
         max_mins = max([day["daily_mins"] for day in data["heatmap"]])
 
         for day in data["heatmap"]:
             dh, dm = divmod(day["daily_mins"], 60)
-            # Calculate how many blocks to draw (max 20 blocks wide)
             blocks = int((day["daily_mins"] / max_mins) * 20) if max_mins > 0 else 0
             bar = "█" * blocks
 
