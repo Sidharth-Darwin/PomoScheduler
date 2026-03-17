@@ -40,13 +40,15 @@ def notify(
     sound_type: str = "work_done",
     fallback_sound: str = "bell.wav",
 ):
-    """Send an OS desktop notification and play a sound."""
+    """Send an OS desktop notification and play a sound without blocking."""
     if platform.system() == "Linux":
         try:
-            subprocess.run(
-                ["notify-send", "-a", "Pomo Planner", title, message], check=False
+            subprocess.Popen(
+                ["notify-send", "-a", "Pomo Planner", title, message],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
-        except FileNotFoundError:
+        except Exception:
             pass
 
     play_sound(sound_type, fallback_sound)
