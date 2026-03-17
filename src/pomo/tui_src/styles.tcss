@@ -34,8 +34,7 @@
     margin-right: 1;
 }
 
-#btn_settings { width: 1fr; }
-#btn_del { width: 2fr; }
+#btn_settings, #btn_stats, #btn_del { width: 1fr; }
 
 /* --- RHS Engine / Visuals --- */
 

@@ -106,6 +106,9 @@ class PomoApp(App):
             self.last_phase, self.last_pomo_count = phase, current_p
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        if event.control.id == "dt_breakdown":
+            return
+
         tabs = self.query_one("#tabs", TabbedContent)
         target_id = int(str(event.control.get_row(event.row_key)[0]))
 

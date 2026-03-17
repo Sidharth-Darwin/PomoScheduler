@@ -29,8 +29,9 @@ class LHSProjectPane(Vertical):
                 yield Button("Start", id="btn_start", variant="success")
                 yield Button("Copy", id="btn_copy", variant="warning")
             with Horizontal():
-                yield Button("Settings", id="btn_settings", variant="default")
                 yield Button("Delete", id="btn_del", variant="error")
+                yield Button("Settings", id="btn_settings", variant="default")
+                yield Button("Stats", id="btn_stats", variant="primary")
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         btn_id = event.button.id
@@ -54,6 +55,11 @@ class LHSProjectPane(Vertical):
 
         elif btn_id == "btn_settings":
             self.app.push_screen(SettingsModal())
+
+        elif btn_id == "btn_stats":
+            from pomo.tui_src.stats_modal import StatsModal
+
+            self.app.push_screen(StatsModal())
 
         elif btn_id == "btn_copy":
             tabs = self.query_one("#tabs", TabbedContent)
