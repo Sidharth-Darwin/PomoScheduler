@@ -17,6 +17,35 @@ class PomoEngine:
         self.last_checked_minute = ""
         self.triggered_schedules = set()
 
+    def _log_current_work_phase(self):
+        """Calculates exact elapsed work time (handling pauses/skips) and logs it."""
+        if self.current_phase != Phase.WORK or not self.active_task:
+            return
+
+        # Calculate exactly how much time is left on the clock
+        if self.is_running:
+            remaining = max(0.0, self.ends_at - time.time())
+        else:
+            remaining = self.paused_remaining
+
+        total_seconds = self.active_task["work_mins"] * 60
+        elapsed_seconds = total_seconds - remaining
+        elapsed_mins = int(round(elapsed_seconds / 60.0))
+
+        if elapsed_mins > 0:
+            end_time = time.time()
+            start_time = end_time - elapsed_seconds
+            str_start = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time))
+            str_end = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(end_time))
+
+            log_session(
+                self.active_task["id"],
+                self.active_task.get("blueprint_id"),
+                str_start,
+                str_end,
+                elapsed_mins,
+            )
+
     def get_status(self) -> dict:
         if self.current_phase == Phase.PAUSED:
             rem = int(self.paused_remaining)
@@ -134,6 +163,8 @@ class PomoEngine:
         if not self.active_task:
             return {"status": "error", "message": "No active task to stop."}
 
+        self._log_current_work_phase()
+
         with get_connection() as conn:
             conn.execute(
                 "UPDATE daily_tasks SET status = 'pending' WHERE id = ?",
@@ -203,18 +234,8 @@ class PomoEngine:
         if self.current_phase == Phase.WORK:
             current_completed = self.active_task.get("pomodoros_completed", 0) + 1
             self.active_task["pomodoros_completed"] = current_completed
-            end_time = time.time()
-            start_time = end_time - (self.active_task["work_mins"] * 60)
-            str_start = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time))
-            str_end = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(end_time))
 
-            log_session(
-                self.active_task["id"],
-                self.active_task.get("blueprint_id"),
-                str_start,
-                str_end,
-                self.active_task["work_mins"],
-            )
+            self._log_current_work_phase()
 
             with get_connection() as conn:
                 conn.execute(
