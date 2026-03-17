@@ -7,8 +7,9 @@ from pomo.storage import (
     init_db,
     create_daily_task,
     get_pending_tasks,
+    get_completed_tasks,
     delete_task,
-    get_gamification_stats,
+    get_stats,
 )
 from rich import print
 
@@ -109,44 +110,90 @@ def list(as_json: bool = typer.Option(False, "--json")):
 
 
 @app.command()
-def stats(as_json: bool = typer.Option(False, "--json")):
-    """View your focus statistics and heatmap."""
+def stats(
+    task_id: Optional[int] = typer.Option(
+        None, "-n", "--task-id", help="Filter by a specific task ID"
+    ),
+    all_time: bool = typer.Option(
+        False, "--all", help="Show all-time statistics instead of just today"
+    ),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """View advanced focus statistics, streaks, and a 7-day heatmap."""
     init_db()
-    data = get_gamification_stats()
+    data = get_stats(task_id, all_time)
 
     if as_json:
         typer.echo(json.dumps(data, indent=2))
         return
 
-    typer.secho("Pomo Planner Stats", fg=typer.colors.MAGENTA, bold=True)
-    typer.echo(f"Total Focus Sessions: {data['total_sessions']}")
+    time_scope = "ALL TIME" if all_time else "TODAY"
+    task_scope = f"Task #{task_id}" if task_id else "All Tasks"
 
+    typer.secho(
+        f"\nPomo Planner Stats [{time_scope} | {task_scope}]",
+        fg=typer.colors.MAGENTA,
+        bold=True,
+    )
+
+    # Format hours and minutes
     total_h, total_m = divmod(data["total_focus_minutes"], 60)
-    today_h, today_m = divmod(data["today_focus_minutes"], 60)
 
-    typer.echo(f"All-Time Focus: {total_h}h {total_m}m")
-    typer.secho(f"Focus Today: {today_h}h {today_m}m", fg=typer.colors.GREEN, bold=True)
+    typer.echo(f"Current Streak:      {data['streak']} days")
+    typer.echo(f"Total Focus Time:    {total_h}h {total_m}m")
+    typer.echo(f"Total Sessions:      {data['total_sessions']}")
 
+    if data["best_hour"]:
+        typer.echo(f"Most Productive:     {data['best_hour']}")
+
+    # Render ASCII Heatmap
     if data["heatmap"]:
-        typer.echo("\nLast 7 Days Heatmap:")
+        typer.secho("\nLast 7 Days Heatmap:", fg=typer.colors.CYAN, bold=True)
+        max_mins = max([day["daily_mins"] for day in data["heatmap"]])
+
         for day in data["heatmap"]:
             dh, dm = divmod(day["daily_mins"], 60)
-            typer.echo(f"  {day['focus_date']}: {dh}h {dm}m")
+            # Calculate how many blocks to draw (max 20 blocks wide)
+            blocks = int((day["daily_mins"] / max_mins) * 20) if max_mins > 0 else 0
+            bar = "█" * blocks
+
+            typer.echo(f"  {day['focus_date']} │ {bar:<20} {dh}h {dm}m")
+    else:
+        typer.secho(
+            "\nNo session data in the last 7 days to build a heatmap.",
+            fg=typer.colors.BRIGHT_BLACK,
+        )
+    print("\n")
 
 
 @app.command()
 def create(
-    name: str = typer.Option(..., "-n", "--name"),
-    pomos: int = typer.Option(5, "-p", "--pomos"),
-    work: int = typer.Option(25, "-w", "--work"),
-    break_m: int = typer.Option(5, "-b", "--break"),
+    name: Optional[str] = typer.Option(None, "-n", "--name", help="Name of the task"),
+    pomos: int = typer.Option(5, "-p", "--pomos", help="Max pomodoros"),
+    work: int = typer.Option(25, "-w", "--work", help="Work minutes"),
+    break_m: int = typer.Option(5, "-b", "--break", help="Break minutes"),
     as_json: bool = typer.Option(False, "--json"),
 ):
+    """Create a new daily task. Leave arguments empty for an interactive prompt."""
     init_db()
+
+    # Interactive mode if name is omitted
+    if name is None:
+        typer.secho("Create a New Task", fg=typer.colors.CYAN, bold=True)
+        name = typer.prompt("Task name", type=str)
+        pomos = int(typer.prompt("Number of pomodoros", default=5))
+        work = int(typer.prompt("Work duration (mins)", default=25))
+        break_m = int(typer.prompt("Break duration (mins)", default=5))
+
+    # Type assertion to satisfy the linter
+    assert name is not None
+
     pomos = max(1, min(pomos, 20))
     work = max(1, min(work, 1000))
     break_m = max(1, min(break_m, 1000))
+
     task_id = create_daily_task(name, pomos, work, break_m)
+
     if as_json:
         typer.echo(json.dumps({"status": "success", "task_id": task_id}))
     else:
@@ -155,9 +202,31 @@ def create(
 
 @app.command()
 def delete(
-    task_id: int = typer.Argument(...), blueprint: bool = typer.Option(False, "--all")
+    task_id: Optional[int] = typer.Argument(None, help="The ID of the task to delete"),
+    blueprint: bool = typer.Option(False, "--all"),
 ):
+    """Delete a task. Leave the ID empty to pick from a list."""
     init_db()
+
+    if task_id is None:
+        tasks = get_pending_tasks() + get_completed_tasks()
+
+        if not tasks:
+            typer.secho("No tasks available to delete.", fg=typer.colors.YELLOW)
+            raise typer.Exit()
+
+        typer.secho("Select a Task to Delete:", fg=typer.colors.CYAN, bold=True)
+        for t in tasks:
+            status_icon = "[DONE]" if t["status"] == "completed" else "[PENDING]"
+            typer.echo(
+                f"[{t['id']}] {status_icon} {t['name']} ({t['pomodoros_completed']}/{t['max_pomodoros']} pomos)"
+            )
+
+        task_id = int(typer.prompt("Enter the ID of the task to delete"))
+
+    # Type assertion to satisfy the linter
+    assert task_id is not None
+
     delete_task(task_id, delete_blueprint=blueprint)
     typer.secho(f"Task {task_id} deleted.", fg=typer.colors.YELLOW)
 
@@ -186,7 +255,10 @@ def start(task_id: Optional[int] = typer.Argument(default=None)):
                 f"[{t['id']}] {t['name']} ({t['pomodoros_completed']}/{t['max_pomodoros']} pomos)"
             )
 
-        task_id = typer.prompt("Enter the ID of the task to start", type=int)
+        task_id = int(typer.prompt("Enter the ID of the task to start"))
+
+    # Type assertion to satisfy the linter
+    assert task_id is not None
 
     response = send_to_daemon({"action": "start", "task_id": task_id})
     color = (

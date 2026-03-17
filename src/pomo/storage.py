@@ -2,6 +2,7 @@ import sqlite3
 import datetime
 from typing import List, Dict, Any, Optional, cast
 from pomo.utils import get_db_path, ensure_dirs
+from datetime import datetime, timedelta
 
 
 def get_connection() -> sqlite3.Connection:
@@ -74,43 +75,92 @@ def log_session(
         conn.commit()
 
 
-def get_gamification_stats() -> dict:
-    """Fetch focus metrics for the CLI."""
+def get_stats(task_id: Optional[int] = None, all_time: bool = False) -> dict:
+    """Fetch advanced focus metrics, streaks, and heatmaps."""
     with get_connection() as conn:
         cursor = conn.cursor()
+
+        # Build dynamic SQL filters based on user flags
+        date_filter = (
+            "1=1" if all_time else "DATE(start_time) = DATE('now', 'localtime')"
+        )
+        task_filter = f"daily_task_id = {task_id}" if task_id is not None else "1=1"
+        where_clause = f"WHERE {date_filter} AND {task_filter}"
+
+        # Heatmap always shows the last 7 days so it looks good, but respects the task filter
+        where_clause_heatmap = f"WHERE {task_filter} AND DATE(start_time) >= DATE('now', 'localtime', '-6 days')"
+
         stats = {
             "total_sessions": 0,
             "total_focus_minutes": 0,
-            "today_focus_minutes": 0,
+            "best_hour": None,
             "heatmap": [],
+            "streak": 0,
         }
 
-        cursor.execute("SELECT COUNT(id), SUM(work_mins) FROM pomodoro_sessions")
+        # 1. Total sessions and minutes
+        cursor.execute(
+            f"SELECT COUNT(id), SUM(work_mins) FROM pomodoro_sessions {where_clause}"
+        )
         row = cursor.fetchone()
         if row and row[0]:
             stats["total_sessions"] = row[0]
             stats["total_focus_minutes"] = row[1] or 0
 
-        cursor.execute(
-            "SELECT SUM(work_mins) FROM pomodoro_sessions WHERE DATE(start_time) = DATE('now', 'localtime')"
-        )
+        # 2. Most Productive Hour
+        cursor.execute(f"""
+            SELECT strftime('%H', start_time) as hour, SUM(work_mins) as mins
+            FROM pomodoro_sessions
+            {where_clause}
+            GROUP BY hour
+            ORDER BY mins DESC
+            LIMIT 1
+        """)
         row = cursor.fetchone()
-        if row and row[0]:
-            stats["today_focus_minutes"] = row[0]
+        if row:
+            stats["best_hour"] = f"{row['hour']}:00"
 
-        cursor.execute("""
+        # 3. Last 7 Days Heatmap
+        cursor.execute(f"""
             SELECT DATE(start_time) as focus_date, SUM(work_mins) as daily_mins
             FROM pomodoro_sessions 
-            WHERE DATE(start_time) >= DATE('now', 'localtime', '-7 days')
+            {where_clause_heatmap}
             GROUP BY DATE(start_time)
             ORDER BY focus_date ASC
         """)
         stats["heatmap"] = [dict(r) for r in cursor.fetchall()]
+
+        # 4. Calculate Current Streak (Consecutive days with at least 1 session)
+        cursor.execute(f"""
+            SELECT DISTINCT DATE(start_time) as focus_date
+            FROM pomodoro_sessions
+            WHERE {task_filter}
+            ORDER BY focus_date DESC
+        """)
+        dates = [r["focus_date"] for r in cursor.fetchall()]
+
+        streak = 0
+        today_date = datetime.now().date()
+        current_check = today_date
+
+        # Check if they already worked today, or if their streak from yesterday is still alive
+        if str(today_date) in dates:
+            streak += 1
+            current_check -= timedelta(days=1)
+        elif str(today_date - timedelta(days=1)) in dates:
+            current_check -= timedelta(days=1)
+
+        while str(current_check) in dates:
+            streak += 1
+            current_check -= timedelta(days=1)
+
+        stats["streak"] = streak
+
         return stats
 
 
 def spawn_daily_tasks():
-    today_str = str(datetime.datetime.today().weekday())
+    today_str = str(datetime.today().weekday())
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM task_blueprints")
