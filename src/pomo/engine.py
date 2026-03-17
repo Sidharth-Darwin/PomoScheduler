@@ -19,7 +19,15 @@ class PomoEngine:
 
     def _log_current_work_phase(self):
         """Calculates exact elapsed work time (handling pauses/skips) and logs it."""
-        if self.current_phase != Phase.WORK or not self.active_task:
+        if not self.active_task:
+            return
+
+        is_working = self.current_phase == Phase.WORK
+        was_working_before_pause = (
+            self.current_phase == Phase.PAUSED and self.pre_pause_phase == Phase.WORK
+        )
+
+        if not (is_working or was_working_before_pause):
             return
 
         # Calculate exactly how much time is left on the clock
