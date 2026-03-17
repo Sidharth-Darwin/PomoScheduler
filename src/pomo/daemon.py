@@ -18,22 +18,19 @@ def check_if_running(sock_path) -> bool:
             client.recv(4096)
             return True
     except Exception:
-        return False  # Socket exists but is dead
+        return False
 
 
 def run_server():
     sock_path = get_socket_path()
 
-    # Idempotency check
     if check_if_running(sock_path):
         sys.exit(0)
 
-    # Clean up dead socket file from a previous crash
     if sock_path.exists():
         sock_path.unlink()
 
     spawn_daily_tasks()
-
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(str(sock_path))
     server.listen(5)
@@ -54,9 +51,11 @@ def run_server():
                             response = engine.process_action(payload)
                             conn.sendall(json.dumps(response).encode("utf-8"))
                         except Exception as e:
-                            err = {"status": "error", "message": str(e)}
-                            conn.sendall(json.dumps(err).encode("utf-8"))
-
+                            conn.sendall(
+                                json.dumps(
+                                    {"status": "error", "message": str(e)}
+                                ).encode("utf-8")
+                            )
             engine.tick()
 
     except KeyboardInterrupt:

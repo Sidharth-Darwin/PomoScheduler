@@ -6,14 +6,12 @@ from pomo.settings import get_config
 
 
 def play_sound(sound_type: str, fallback_file: str):
-    """Play a custom sound from config, or fallback to the default."""
     if platform.system() != "Linux":
         return
 
     config = get_config()
     custom_path = config.get("sounds", {}).get(sound_type, "")
 
-    # Try Custom Audio Path
     if custom_path:
         target_path = Path(custom_path)
         if target_path.exists():
@@ -24,7 +22,6 @@ def play_sound(sound_type: str, fallback_file: str):
             )
             return
 
-    # Fallback to built-in Audio Path
     default_path = DATA_DIR / "sounds" / fallback_file
     if default_path.exists():
         subprocess.Popen(
@@ -40,7 +37,6 @@ def notify(
     sound_type: str = "work_done",
     fallback_sound: str = "bell.wav",
 ):
-    """Send an OS desktop notification and play a sound without blocking."""
     if platform.system() == "Linux":
         try:
             subprocess.Popen(

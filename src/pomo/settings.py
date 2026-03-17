@@ -17,7 +17,6 @@ DEFAULT_CONFIG = {
 
 
 def get_config() -> dict:
-    """Load settings from ~/.config/pomo/config.json, or create it if missing."""
     if not CONFIG_FILE.exists():
         save_config(DEFAULT_CONFIG)
         return DEFAULT_CONFIG

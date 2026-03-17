@@ -42,25 +42,84 @@ def init_db():
                 FOREIGN KEY(blueprint_id) REFERENCES task_blueprints(id)
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pomodoro_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                daily_task_id INTEGER,
+                blueprint_id INTEGER,
+                start_time DATETIME,
+                end_time DATETIME,
+                work_mins INTEGER,
+                FOREIGN KEY(daily_task_id) REFERENCES daily_tasks(id)
+            )
+        """)
         conn.commit()
 
 
+def log_session(
+    daily_task_id: int,
+    blueprint_id: Optional[int],
+    start_time: str,
+    end_time: str,
+    work_mins: int,
+):
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO pomodoro_sessions (daily_task_id, blueprint_id, start_time, end_time, work_mins)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (daily_task_id, blueprint_id, start_time, end_time, work_mins),
+        )
+        conn.commit()
+
+
+def get_gamification_stats() -> dict:
+    """Fetch focus metrics for the CLI."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        stats = {
+            "total_sessions": 0,
+            "total_focus_minutes": 0,
+            "today_focus_minutes": 0,
+            "heatmap": [],
+        }
+
+        cursor.execute("SELECT COUNT(id), SUM(work_mins) FROM pomodoro_sessions")
+        row = cursor.fetchone()
+        if row and row[0]:
+            stats["total_sessions"] = row[0]
+            stats["total_focus_minutes"] = row[1] or 0
+
+        cursor.execute(
+            "SELECT SUM(work_mins) FROM pomodoro_sessions WHERE DATE(start_time) = DATE('now', 'localtime')"
+        )
+        row = cursor.fetchone()
+        if row and row[0]:
+            stats["today_focus_minutes"] = row[0]
+
+        cursor.execute("""
+            SELECT DATE(start_time) as focus_date, SUM(work_mins) as daily_mins
+            FROM pomodoro_sessions 
+            WHERE DATE(start_time) >= DATE('now', 'localtime', '-7 days')
+            GROUP BY DATE(start_time)
+            ORDER BY focus_date ASC
+        """)
+        stats["heatmap"] = [dict(r) for r in cursor.fetchall()]
+        return stats
+
+
 def spawn_daily_tasks():
-    """Spawns tasks based on the specific day of the week."""
-    today_str = str(datetime.datetime.today().weekday())  # 0=Mon, 6=Sun
+    today_str = str(datetime.datetime.today().weekday())
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM task_blueprints")
         blueprints = cursor.fetchall()
 
         for bp in blueprints:
-            # Check if today is one of the assigned repeating days
             if bp["repeat_days"] and today_str in bp["repeat_days"].split(","):
                 cursor.execute(
-                    """
-                    SELECT id FROM daily_tasks 
-                    WHERE blueprint_id = ? AND date_added = DATE('now', 'localtime')
-                """,
+                    "SELECT id FROM daily_tasks WHERE blueprint_id = ? AND date_added = DATE('now', 'localtime')",
                     (bp["id"],),
                 )
                 if not cursor.fetchone():
@@ -68,7 +127,7 @@ def spawn_daily_tasks():
                         """
                         INSERT INTO daily_tasks (blueprint_id, name, max_pomodoros, work_mins, break_mins, scheduled_time, auto_start)
                         VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
+                        """,
                         (
                             bp["id"],
                             bp["name"],
@@ -96,7 +155,7 @@ def create_daily_task(
             """
             INSERT INTO daily_tasks (name, max_pomodoros, work_mins, break_mins, scheduled_time, auto_start)
             VALUES (?, ?, ?, ?, ?, ?)
-        """,
+            """,
             (name, pomos, work, break_m, scheduled_time, auto_start),
         )
         conn.commit()
@@ -120,7 +179,7 @@ def create_repeating_task(
                 """
                 INSERT INTO task_blueprints (name, max_pomodoros, work_mins, break_mins, repeat_days, scheduled_time, auto_start)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
+                """,
                 (name, pomos, work, break_m, repeat_days, scheduled_time, auto_start),
             )
             blueprint_id = cursor.lastrowid
@@ -129,7 +188,7 @@ def create_repeating_task(
             """
             INSERT INTO daily_tasks (blueprint_id, name, max_pomodoros, work_mins, break_mins, scheduled_time, auto_start)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
+            """,
             (blueprint_id, name, pomos, work, break_m, scheduled_time, auto_start),
         )
         conn.commit()
@@ -198,7 +257,7 @@ def update_daily_task(
             UPDATE daily_tasks
             SET name=?, max_pomodoros=?, work_mins=?, break_mins=?, scheduled_time=?, auto_start=?
             WHERE id=?
-        """,
+            """,
             (name, pomos, work, break_m, scheduled_time, auto_start, task_id),
         )
         conn.commit()
@@ -220,7 +279,7 @@ def update_blueprint(
             UPDATE task_blueprints
             SET name=?, max_pomodoros=?, work_mins=?, break_mins=?, repeat_days=?, scheduled_time=?, auto_start=?
             WHERE id=?
-        """,
+            """,
             (
                 name,
                 pomos,

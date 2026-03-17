@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Optional, Literal
+from typing import Optional
 from pydantic import BaseModel
 
 
@@ -19,18 +19,9 @@ class ActiveTaskState(BaseModel):
 
 
 class DaemonStatus(BaseModel):
-    """The JSON payload returned by `pomo status --json`"""
-
     status: str = "success"
     is_running: bool
     current_phase: Phase
     active_task: Optional[ActiveTaskState] = None
     time_remaining_seconds: Optional[int] = None
     ends_at: Optional[str] = None
-
-
-class SocketAction(BaseModel):
-    """The JSON payload the CLI sends TO the daemon"""
-
-    action: Literal["status", "start", "pause", "skip", "stop", "list"]
-    task_id: Optional[int] = None
